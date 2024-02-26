@@ -84,28 +84,44 @@ class MultiHeadAttention(nn.Module):
   def __init__(self, n_heads, head_size):
     super().__init__()
     self.heads = nn.ModuleList([Head(head_size) for _ in range(n_heads)])
+    self.proj = nn.Linear(n_embd, n_embd) # project the concatenated heads for residual connection
 
   def forward(self, x):
-    return torch.cat([head(x) for head in self.heads], dim=-1)
+    x = torch.cat([h(x) for h in self.heads], dim=-1)
+    return self.proj(x)
 
 class FeedForward(nn.Module):
   def __init__(self):
     super().__init__()
     self.net = nn.Sequential(
-      nn.Linear(n_embd, n_embd),
+      nn.Linear(n_embd, 4 * n_embd),
       nn.ReLU(),
+      nn.Linear(4 * n_embd, n_embd) # for residual connection
     )
 
   def forward(self, x):
     return self.net(x)
+
+class Block(nn.Module):
+  """ Transformer block: communication (self-attention) + computation (feed-forward) """
+  def __init__(self, n_embd, n_head):
+    super().__init__()
+    head_size = n_embd // n_head
+    self.sa_heads = MultiHeadAttention(n_head, head_size) # self-attention heads
+    self.ff = FeedForward() # feed-forward, simple 1-layer MLP (multi-layer perceptron)
+
+  def forward(self, x):
+    x = x + self.sa_heads(x) # x + self-attention heads (residual connection)
+    x = x + self.ff(x) # x + feed-forward (residual connection)
+    return x
 
 class BigramLanguageModel(nn.Module):
   def __init__(self):
     super().__init__()
     self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
     self.position_embedding_table = nn.Embedding(context_length, n_embd)
-    self.sa_heads = MultiHeadAttention(4, n_embd // 4) # self-attention heads
-    self.ff = FeedForward() # feed-forward, simple 1-layer MLP (multi-layer perceptron)
+
+    self.transformer_blocks = nn.Sequential(*[Block(n_embd, n_head=4) for _ in range(3)])
     self.lm_head = nn.Linear(n_embd, vocab_size) # language model head
 
   def forward(self, x, targets=None):
@@ -115,8 +131,7 @@ class BigramLanguageModel(nn.Module):
     pos_embd = self.position_embedding_table(torch.arange(time, device=device))
     x = tok_embd + pos_embd
 
-    x = self.sa_heads(x)
-    x = self.ff(x)
+    x = self.transformer_blocks(x)
     logits = self.lm_head(x)
 
     loss = None
