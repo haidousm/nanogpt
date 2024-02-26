@@ -96,7 +96,7 @@ class FeedForward(nn.Module):
     self.net = nn.Sequential(
       nn.Linear(n_embd, 4 * n_embd),
       nn.ReLU(),
-      nn.Linear(4 * n_embd, n_embd) # for residual connection
+      nn.Linear(4 * n_embd, n_embd) # for residual connection,
     )
 
   def forward(self, x):
@@ -109,10 +109,12 @@ class Block(nn.Module):
     head_size = n_embd // n_head
     self.sa_heads = MultiHeadAttention(n_head, head_size) # self-attention heads
     self.ff = FeedForward() # feed-forward, simple 1-layer MLP (multi-layer perceptron)
+    self.ln1 = nn.LayerNorm(n_embd) # layer normalization so that the input to the block has mean 0 and std 1 (helps with training)
+    self.ln2 = nn.LayerNorm(n_embd)
 
   def forward(self, x):
-    x = x + self.sa_heads(x) # x + self-attention heads (residual connection)
-    x = x + self.ff(x) # x + feed-forward (residual connection)
+    x = x + self.sa_heads(self.ln1(x)) # x + self-attention heads (residual connection)
+    x = x + self.ff(self.ln2(x)) # x + feed-forward (residual connection)
     return x
 
 class BigramLanguageModel(nn.Module):
@@ -121,7 +123,12 @@ class BigramLanguageModel(nn.Module):
     self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
     self.position_embedding_table = nn.Embedding(context_length, n_embd)
 
-    self.transformer_blocks = nn.Sequential(*[Block(n_embd, n_head=4) for _ in range(3)])
+    self.transformer_blocks = nn.Sequential(
+      Block(n_embd, n_head=4),
+      Block(n_embd, n_head=4),
+      Block(n_embd, n_head=4),
+      nn.LayerNorm(n_embd)
+    )
     self.lm_head = nn.Linear(n_embd, vocab_size) # language model head
 
   def forward(self, x, targets=None):
