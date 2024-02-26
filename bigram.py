@@ -4,17 +4,20 @@ import torch.nn.functional as F
 import time
 
 # hyperparameters
-batch_size = 32 # number of sequences in a batch
-context_length = 8 # length of a sequence
+batch_size = 64 # number of sequences in a batch
+context_length = 256 # length of a sequence
 max_iters = 5000
 eval_interval = 500
 eval_iters = 200
-learning_rate = 1e-3
-# device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
-device = torch.device('cpu')
-n_embd = 32
+learning_rate = 3e-4
+n_embd = 384
+n_layer = 6
+n_head = 6
+dropout = 0.2
 # -------------------
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+# device = torch.device('cpu')
 torch.manual_seed(1337)
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt -O data/input.txt
@@ -67,6 +70,8 @@ class Head(nn.Module):
     self.value = nn.Linear(n_embd, head_size, bias=False)
     self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
 
+    self.dropout = nn.Dropout(dropout)
+
   def forward(self, x):
     _, time, channels = x.shape
     k = self.key(x)
@@ -76,6 +81,7 @@ class Head(nn.Module):
     attn = (q @ k.transpose(-2, -1)) / (channels ** 0.5) # weights
     attn = attn.masked_fill(self.tril[:time, :time] == 0, float('-inf'))
     attn = F.softmax(attn, dim=-1)
+    attn = self.dropout(attn)
 
     out = attn @ v
     return out
@@ -85,9 +91,11 @@ class MultiHeadAttention(nn.Module):
     super().__init__()
     self.heads = nn.ModuleList([Head(head_size) for _ in range(n_heads)])
     self.proj = nn.Linear(n_embd, n_embd) # project the concatenated heads for residual connection
+    self.dropout = nn.Dropout(dropout)
 
   def forward(self, x):
     x = torch.cat([h(x) for h in self.heads], dim=-1)
+    x = self.dropout(x)
     return self.proj(x)
 
 class FeedForward(nn.Module):
@@ -96,7 +104,8 @@ class FeedForward(nn.Module):
     self.net = nn.Sequential(
       nn.Linear(n_embd, 4 * n_embd),
       nn.ReLU(),
-      nn.Linear(4 * n_embd, n_embd) # for residual connection,
+      nn.Linear(4 * n_embd, n_embd), # for residual connection,
+      nn.Dropout(dropout)
     )
 
   def forward(self, x):
@@ -123,12 +132,8 @@ class BigramLanguageModel(nn.Module):
     self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
     self.position_embedding_table = nn.Embedding(context_length, n_embd)
 
-    self.transformer_blocks = nn.Sequential(
-      Block(n_embd, n_head=4),
-      Block(n_embd, n_head=4),
-      Block(n_embd, n_head=4),
-      nn.LayerNorm(n_embd)
-    )
+    self.transformer_blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
+    self.ln = nn.LayerNorm(n_embd)
     self.lm_head = nn.Linear(n_embd, vocab_size) # language model head
 
   def forward(self, x, targets=None):
@@ -139,6 +144,7 @@ class BigramLanguageModel(nn.Module):
     x = tok_embd + pos_embd
 
     x = self.transformer_blocks(x)
+    x = self.ln(x)
     logits = self.lm_head(x)
 
     loss = None
