@@ -6,12 +6,13 @@ import time
 # hyperparameters
 batch_size = 32 # number of sequences in a batch
 context_length = 8 # length of a sequence
-max_iters = 3000
-eval_interval = 300
+max_iters = 5000
+eval_interval = 500
 eval_iters = 200
-learning_rate = 1e-2
+learning_rate = 1e-3
 # device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
 device = torch.device('cpu')
+n_embd = 32
 # -------------------
 
 torch.manual_seed(1337)
@@ -58,14 +59,51 @@ def estimate_loss():
   model.train()
   return out
 
-class BigramLanguageModel(nn.Module):
-  def __init__(self, vocab_size):
+class Head(nn.Module):
+  def __init__(self, head_size):
     super().__init__()
-    self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+    self.key = nn.Linear(n_embd, head_size, bias=False)
+    self.query = nn.Linear(n_embd, head_size, bias=False)
+    self.value = nn.Linear(n_embd, head_size, bias=False)
+    self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
+
+  def forward(self, x):
+    _, time, channels = x.shape
+    k = self.key(x)
+    q = self.query(x)
+    v = self.value(x)
+
+    attn = (q @ k.transpose(-2, -1)) / (channels ** 0.5) # weights
+    attn = attn.masked_fill(self.tril[:time, :time] == 0, float('-inf'))
+    attn = F.softmax(attn, dim=-1)
+
+    out = attn @ v
+    return out
+
+class MultiHeadAttention(nn.Module):
+  def __init__(self, n_heads, head_size):
+    super().__init__()
+    self.heads = nn.ModuleList([Head(head_size) for _ in range(n_heads)])
+
+  def forward(self, x):
+    return torch.cat([head(x) for head in self.heads], dim=-1)
+class BigramLanguageModel(nn.Module):
+  def __init__(self):
+    super().__init__()
+    self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+    self.position_embedding_table = nn.Embedding(context_length, n_embd)
+    self.sa_heads = MultiHeadAttention(4, n_embd // 4) # self-attention heads
+    self.lm_head = nn.Linear(n_embd, vocab_size) # language model head
 
   def forward(self, x, targets=None):
+    batch, time = x.shape
 
-    logits = self.token_embedding_table(x)
+    tok_embd = self.token_embedding_table(x)
+    pos_embd = self.position_embedding_table(torch.arange(time, device=device))
+    x = tok_embd + pos_embd
+
+    x = self.sa_heads(x)
+    logits = self.lm_head(x)
 
     loss = None
     if targets is not None:
@@ -78,7 +116,9 @@ class BigramLanguageModel(nn.Module):
 
   def generate(self, x, max_new_tokens):
     for _ in range(max_new_tokens):
-      logits, loss = self(x)
+      x_cond = x[:, -context_length:]
+
+      logits, loss = self(x_cond)
       logits = logits[:, -1, :]
       probs = F.softmax(logits, dim=-1)
       next_token = torch.multinomial(probs, 1)
@@ -87,7 +127,7 @@ class BigramLanguageModel(nn.Module):
 
 
 
-model = BigramLanguageModel(vocab_size)
+model = BigramLanguageModel()
 model = model.to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
